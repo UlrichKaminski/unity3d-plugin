@@ -14,6 +14,7 @@ import java.io.OutputStream;
 import java.io.Serializable;
 import java.nio.charset.Charset;
 import java.util.concurrent.ExecutionException;
+import org.jenkinsci.remoting.RoleChecker;
 
 import org.jvnet.hudson.test.HudsonTestCase;
 /**
@@ -84,6 +85,10 @@ public class PipeTest extends HudsonTestCase implements Serializable {
             out.write("Hello".getBytes());
             out.close();
             return "DONE";
+        }
+
+        public void checkRoles(RoleChecker rc) throws SecurityException {
+            throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
         }
     }
 }

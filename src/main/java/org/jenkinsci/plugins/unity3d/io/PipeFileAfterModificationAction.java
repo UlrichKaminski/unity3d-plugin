@@ -41,6 +41,7 @@ public class PipeFileAfterModificationAction implements Callable<Long> {
      * @return the number of bytes copied
      * @throws IOException
      */
+    @Override
     public Long call() throws IOException {
         File file = new DetectFileModifiedAction(path).call();
         long pos = 0;
@@ -92,22 +93,16 @@ public class PipeFileAfterModificationAction implements Callable<Long> {
     }
 
     private void writeMessagesToOutput(String... msgs) {
-        PrintStream printStream = new PrintStream(out);
-        try {
+        try (PrintStream printStream = new PrintStream(out)) {
             for (String msg : msgs) {
                 printStream.println(msg);
             }
-        } finally {
-            printStream.close();
         }
     }
 
     private void forcePrintStacktrace(Throwable t) {
-        PrintStream printStream = new PrintStream(out);
-        try {
+        try (PrintStream printStream = new PrintStream(out)) {
             t.printStackTrace(printStream);
-        } finally {
-            printStream.close();
         }
     }
 

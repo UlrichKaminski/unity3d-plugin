@@ -26,7 +26,10 @@ import java.io.OutputStream;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Future;
+import java.util.logging.Level;
 import java.util.logging.Logger;
+import jenkins.model.Jenkins;
+import org.jenkinsci.remoting.RoleChecker;
 
 /**
  * Represents a Unity3d installation (name, home_dir, etc.)
@@ -48,21 +51,33 @@ public class Unity3dInstallation
         super(source.getName(), home, properties);
     }
 
+    @Override
     public Unity3dInstallation forEnvironment(EnvVars env) {
         return new Unity3dInstallation(this, env.expand(getHome()), getProperties().toList());
     }
 
+    @Override
     public Unity3dInstallation forNode(Node node, TaskListener log) throws IOException, InterruptedException {
         return new Unity3dInstallation(this, translateFor(node, log), getProperties().toList());
     }
 
     /**
      * Gets the executable path of this Unity3dBuilder on the given target system.
+     * @param launcher
+     * @return 
+     * @throws java.io.IOException
+     * @throws java.lang.InterruptedException
      */
     public String getExecutable(Launcher launcher) throws IOException, InterruptedException {
         return launcher.getChannel().call(new Callable<String, IOException>() {
+            @Override
             public String call() throws IOException {
                 return checkUnity3dExecutablePath(getHome());
+            }
+
+            @Override
+            public void checkRoles(RoleChecker rc) throws SecurityException {
+                throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
             }
         });
     }
@@ -81,7 +96,7 @@ public class Unity3dInstallation
         static Unity3dExecutablePath check(String home) {
             File value = new File(home);
             File unityExe = getExeFile(value);
-            log.fine("home " + home + " value " + value + " exe " + unityExe + " path abs " + unityExe.getAbsolutePath() + " path " + unityExe.getPath());
+            log.log(Level.FINE, "home {0} value {1} exe {2} path abs {3} path {4}", new Object[]{home, value, unityExe, unityExe.getAbsolutePath(), unityExe.getPath()});
             String path = unityExe.getPath(); // getAbsolutePath
             boolean exists = value.isDirectory() && unityExe.exists();
             return new Unity3dExecutablePath(home, path, exists);
@@ -124,14 +139,21 @@ public class Unity3dInstallation
      * <p>
      * This future can be {@link Future#cancel(boolean) cancelled} in order for the pipe to be closed properly.
      * @param launcher
+     * @param customLogFile
      * @param ros the output stream to write into
      * @return the number of bytes read
      * @throws IOException
      */
     public Future<Long> pipeEditorLog(final Launcher launcher, final String customLogFile, final OutputStream ros) throws IOException {
         return launcher.getChannel().callAsync(new Callable<Long, IOException>() {
+            @Override
             public Long call() throws IOException {
                 return new PipeFileAfterModificationAction(getEditorLogFile(customLogFile).getAbsolutePath(), ros, true).call();
+            }
+
+            @Override
+            public void checkRoles(RoleChecker rc) throws SecurityException {
+                throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
             }
         });
     }
@@ -139,14 +161,21 @@ public class Unity3dInstallation
     /**
      * Returns the Editor.log path on the remote machine
      * @param launcher
+     * @param customLogFile
      * @return
      * @throws IOException
      * @throws InterruptedException
      */
     public String getEditorLogPath(final Launcher launcher, final String customLogFile) throws IOException, InterruptedException {
         return launcher.getChannel().call(new Callable<String, IOException>() {
+            @Override
             public String call() throws IOException {
                 return getEditorLogFile(customLogFile).getAbsolutePath();
+            }
+
+            @Override
+            public void checkRoles(RoleChecker rc) throws SecurityException {
+                throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
             }
         });
     }
@@ -158,14 +187,14 @@ public class Unity3dInstallation
             String localAppData;
             try {
                 localAppData = Win32Util.getLocalAppData();
-                log.fine("Found %LOCALAPPDATA% under " + localAppData);
+                log.log(Level.FINE, "Found %LOCALAPPDATA% under {0}", localAppData);
             } catch (RuntimeException re) {
-                log.warning("Unable to find %LOCALAPPDATA%, reverting to Environment variable " + re.getMessage());
+                log.log(Level.WARNING, "Unable to find %LOCALAPPDATA%, reverting to Environment variable {0}", re.getMessage());
                 // JENKINS-24265 / providing fallback to LOCALAPPDATA shouldn't be necessary, but this worked most
                 // of the cases and I am unable to test for all Windows configurations right now.
                 // This should be removed someday....
                 localAppData = EnvVars.masterEnvVars.get("LOCALAPPDATA");
-                log.fine("Found %LOCALAPPDATA% (from environment variable) under " + localAppData);
+                log.log(Level.FINE, "Found %LOCALAPPDATA% (from environment variable) under {0}", localAppData);
                 if (localAppData == null) {
                     throw new RuntimeException("Empty LOCALAPPDATA environment variable. Use -logFile command line argument as workaround. Unable to find Editor.log location (see JENKINS-24265).");
                 }
@@ -192,12 +221,12 @@ public class Unity3dInstallation
         // for compatibility reasons, the persistence is done by Unity3dBuilder.DescriptorImpl
         @Override
         public Unity3dInstallation[] getInstallations() {
-            return Hudson.getInstance().getDescriptorByType(Unity3dBuilder.DescriptorImpl.class).getInstallations();
+            return Jenkins.getInstance().getDescriptorByType(Unity3dBuilder.DescriptorImpl.class).getInstallations();
         }
 
         @Override
         public void setInstallations(Unity3dInstallation... installations) {
-            Hudson.getInstance().getDescriptorByType(Unity3dBuilder.DescriptorImpl.class).setInstallations(installations);
+            Jenkins.getInstance().getDescriptorByType(Unity3dBuilder.DescriptorImpl.class).setInstallations(installations);
         }
 
         @Override
@@ -207,17 +236,19 @@ public class Unity3dInstallation
 
         /**
          * Checks if the UNITY_HOME is valid.
+         * @param value
+         * @return 
          */
         public FormValidation doCheckHome(@QueryParameter String value) {
             // this can be used to check the existence of a file on the server, so needs to be protected
-            if (!Hudson.getInstance().hasPermission(Hudson.ADMINISTER))
+            if (!Jenkins.getInstance().hasPermission(Hudson.ADMINISTER))
                 return FormValidation.ok();
 
             if (value.equals(""))
                 return FormValidation.ok();
 
             String unityHome = Util.replaceMacro(value, EnvVars.masterEnvVars);
-            log.fine("UNITY_HOME:" + unityHome);
+            log.log(Level.FINE, "UNITY_HOME:{0}", unityHome);
             Unity3dExecutablePath install = Unity3dExecutablePath.check(unityHome);
 
             if (! install.isVariableExpanded()) {
@@ -228,6 +259,12 @@ public class Unity3dInstallation
             return FormValidation.ok();
         }
 
+        /**
+         *
+         * @param value
+         * @return
+         */
+        @Override
         public FormValidation doCheckName(@QueryParameter String value) {
             return FormValidation.validateRequired(value);
         }

@@ -6,9 +6,7 @@ import hudson.Extension;
 import hudson.FilePath;
 import hudson.Launcher;
 import hudson.Util;
-import hudson.model.BuildListener;
 import hudson.model.AbstractBuild;
-import hudson.model.AbstractProject;
 import hudson.model.Computer;
 import hudson.model.Result;
 import hudson.tasks.BuildStepDescriptor;
@@ -31,6 +29,13 @@ import java.util.logging.Logger;
 
 import com.google.common.base.Function;
 import com.google.common.collect.Collections2;
+import hudson.AbortException;
+import hudson.model.AbstractProject;
+import hudson.model.Run;
+import hudson.model.TaskListener;
+import hudson.tasks.BuildStepMonitor;
+import java.util.HashMap;
+import java.util.logging.Level;
 
 import net.sf.json.JSONObject;
 import org.jenkinsci.plugins.unity3d.io.Pipe;
@@ -38,18 +43,11 @@ import org.jenkinsci.plugins.unity3d.io.StreamCopyThread;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
+import jenkins.tasks.SimpleBuildStep;
+import org.kohsuke.stapler.DataBoundSetter;
 
-/**
- * Unity3d builder
- * <p>
- * Features:<br/>
- * <u>
- *  <li>supports local and remote execution</li>
- *  <li>pipe the editor.log into the console</li>
- * </u>
- * @author Jerome Lacoste
- */
-public class Unity3dBuilder extends Builder {
+
+public class Unity3dBuilder extends Builder implements SimpleBuildStep {
     private static final Logger log = Logger.getLogger(Unity3dBuilder.class.getName());
 
     /**
@@ -61,13 +59,24 @@ public class Unity3dBuilder extends Builder {
      */
     private String argLine;
     private String unstableReturnCodes;
+    
+    @DataBoundSetter
+    public void setArgLine(String argLine) {
+       this.argLine = argLine;
+   }
+    
+     @DataBoundSetter
+    public void setUnstableReturnCodes(String unstableReturnCodes) {
+       this.unstableReturnCodes = unstableReturnCodes;
+   }
+    
+    @DataBoundSetter
+    public void setUnity3dName(String unity3dName) {
+       this.unity3dName = unity3dName;
+   }
 
     @DataBoundConstructor
-    public Unity3dBuilder(String unity3dName, String argLine, String unstableReturnCodes) {
-        this.unity3dName = unity3dName;
-        this.argLine = argLine;
-        this.unstableReturnCodes = unstableReturnCodes;
-    }
+    public Unity3dBuilder() {}
 
     @SuppressWarnings("unused")
     private Object readResolve() throws ObjectStreamException {
@@ -77,6 +86,7 @@ public class Unity3dBuilder extends Builder {
     }
 
     /**
+     * @return 
      * @since 0.1
      */
     public String getArgLine() {
@@ -84,6 +94,7 @@ public class Unity3dBuilder extends Builder {
     }
 
     /**
+     * @return 
      * @since 1.0
      */
     public String getUnstableReturnCodes() {
@@ -105,8 +116,7 @@ public class Unity3dBuilder extends Builder {
     public String getUnity3dName() {
         return unity3dName;
     }
-
-
+    
     private static class PerformException extends Exception {
         private static final long serialVersionUID = 1L;
         
@@ -116,27 +126,27 @@ public class Unity3dBuilder extends Builder {
     }
     
     @Override
-    public boolean perform(AbstractBuild<?,?> build, Launcher launcher, BuildListener listener) throws InterruptedException {
+   //public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, final BuildListener listener)
+    public void perform(Run<?, ?> build, FilePath workspace, Launcher launcher, TaskListener listener) throws InterruptedException, IOException {
         try {
-            _perform(build, launcher, listener);
-            return true;
+            _perform(build, workspace, launcher, listener);
         } catch (PerformException e) {
             listener.fatalError(e.getMessage());
-            return false;
+            throw new AbortException(e.getMessage());
         } catch (IOException e) {
             Util.displayIOException(e, listener);
             String errorMessage = Messages.Unity3d_ExecUnexpectedlyFailed();
             e.printStackTrace(listener.fatalError(errorMessage));
-            return false;
+            throw e;
         }
     }
 
-    private void _perform(AbstractBuild<?,?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException, PerformException {
+    private void _perform(Run<?,?> build, FilePath workspace, Launcher launcher, TaskListener listener) throws IOException, InterruptedException, PerformException {
         EnvVars env = build.getEnvironment(listener);
         
-        Unity3dInstallation ui = getAndConfigureUnity3dInstallation(listener, env);
+        Unity3dInstallation ui = getAndConfigureUnity3dInstallation(workspace, listener, env);
 
-        ArgumentListBuilder args = prepareCommandlineArguments(build, launcher, ui, env);
+        ArgumentListBuilder args = prepareCommandlineArguments(build, workspace, launcher, ui, env);
 
         String customLogFile = findLogFileArgument(args);
 
@@ -150,7 +160,7 @@ public class Unity3dBuilder extends Builder {
         StreamCopyThread copierThread = new StreamCopyThread("Pipe editor.log to output thread.", pipe.getIn(), ca);
         try {
             copierThread.start();
-            int r = launcher.launch().cmds(args).envs(env).stdout(ca).pwd(build.getWorkspace()).join();
+            int r = launcher.launch().cmds(args).envs(env).stdout(ca).pwd(workspace).join();
             // r == 11 means executeMethod could not be found ?
             checkProcResult(build, r);
         } finally {
@@ -178,8 +188,8 @@ public class Unity3dBuilder extends Builder {
         }
     }
 
-    private void checkProcResult(AbstractBuild<?, ?> build, int result) throws PerformException {
-        log.info("Unity command line exited with error code: " + result);
+    private void checkProcResult(Run<?,?> build, int result) throws PerformException {
+        log.log(Level.INFO, "Unity command line exited with error code: {0}", result);
         if (isBuildUnstable(result)) {
             log.info(Messages.Unity3d_BuildMarkedAsUnstableBecauseOfStatus(result));
             build.setResult(Result.UNSTABLE);
@@ -195,7 +205,7 @@ public class Unity3dBuilder extends Builder {
 
     private boolean isBuildSuccess(int result) {
         // we could add a set of success results as well, if needed.
-        return result == 0;
+        return result == 0 || result == 2 || result == 3;
     }
 
     /** Find the -logFile argument from the built arg line **/
@@ -210,29 +220,34 @@ public class Unity3dBuilder extends Builder {
         return customLogFile;
     }
 
-    private ArgumentListBuilder prepareCommandlineArguments(AbstractBuild<?,?> build, Launcher launcher, Unity3dInstallation ui, EnvVars vars) throws IOException, InterruptedException, PerformException {
+    private ArgumentListBuilder prepareCommandlineArguments(Run<?,?> build, FilePath workspace, Launcher launcher, Unity3dInstallation ui, EnvVars vars) throws IOException, InterruptedException, PerformException {
         String exe;
         try {
             exe = ui.getExecutable(launcher);
         } catch (RuntimeException re) {
             throw new PerformException(re.getMessage());
         }
-
-        FilePath moduleRoot = build.getModuleRoot();
-        String moduleRootRemote = moduleRoot.getRemote();
-        Map<String,String> buildParameters = build.getBuildVariables();
-
+        
+        Map<String,String> buildParameters = new HashMap<String, String>();
+        String moduleRootRemote = workspace.getRemote();
+        
+        if (build instanceof AbstractBuild) {
+           FilePath moduleRoot = ((AbstractBuild) build).getModuleRoot();
+           moduleRootRemote = moduleRoot.getRemote();
+           buildParameters = ((AbstractBuild) build).getBuildVariables();
+        }
+        
         return createCommandlineArgs(exe, moduleRootRemote, vars, buildParameters);
     }
 
-    private Unity3dInstallation getAndConfigureUnity3dInstallation(BuildListener listener, EnvVars env) throws PerformException, IOException, InterruptedException {
+    private Unity3dInstallation getAndConfigureUnity3dInstallation(FilePath workspace, TaskListener listener, EnvVars env) throws PerformException, IOException, InterruptedException {
         Unity3dInstallation ui = getUnity3dInstallation();
 
         if(ui==null) {
             throw new PerformException(Messages.Unity3d_NoUnity3dInstallation());
         }
-
-        ui = ui.forNode(Computer.currentComputer().getNode(), listener);
+        
+        ui = ui.forNode(workspace.toComputer().getNode(), listener);
         ui = ui.forEnvironment(env);
         return ui;
     }
@@ -268,9 +283,10 @@ public class Unity3dBuilder extends Builder {
     }
 
     static Set<Integer> toIntegerSet(String csvIntegers) {
-        Set<Integer> result = new HashSet<Integer>();
+        Set<Integer> result = new HashSet<>();
         if (! csvIntegers.trim().equals("")) {
             result.addAll(Collections2.transform(Arrays.asList(csvIntegers.split(",")), new Function<String, Integer>() {
+                @Override
                 public Integer apply(String s) {
                     return Integer.parseInt(s.trim());
                 }
@@ -289,9 +305,10 @@ public class Unity3dBuilder extends Builder {
         private String globalArgLine;
 
         @CopyOnWrite
-        private volatile Unity3dInstallation[] installations = new Unity3dInstallation[0];
+        private volatile Unity3dInstallation[] installations;
 
         public DescriptorImpl() {
+            this.installations = new Unity3dInstallation[0];
             load();
         }
 
@@ -341,8 +358,13 @@ public class Unity3dBuilder extends Builder {
             return true;
         }
 
+        @Override
         public String getDisplayName() {
             return "Invoke Unity3d Editor";
+        }
+        
+       public BuildStepMonitor getRequiredMonitorService() {
+         return BuildStepMonitor.NONE;
         }
     }
 }
